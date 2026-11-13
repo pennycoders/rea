@@ -1,0 +1,44 @@
+# The lab's REA package: upstream's npm package, unchanged, packed from the integration branch
+# (upstream main with every fork branch merged) as <version>-lab.<run> and published to the
+# lab's package-only Gitea owner (lab-packages), which the reverse-engineering image installs by
+# its SHA-256. npm packages come through the lab's mirror (the runner's NPM_CONFIG_REGISTRY).
+# Gitea runs only these workflows (.gitea/workflows), not .github's; the GitHub fork has Actions off.
+name: lab-package
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      # REA's .nvmrc line, through Harbor's proxy cache.
+      image: registry.cbr.app/dockerhub/library/node:24.22.1-trixie@sha256:f1e034976f948cf212ef1f659c12e5dd58ac7eab947831813e81a62401ca38be
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Version
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          echo "VERSION=${version}-lab.${{ github.run_number }}" >> "$GITHUB_ENV"
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Pack
+        run: |
+          npm version "$VERSION" --no-git-tag-version
+          node scripts/generate-package-metadata.mjs
+          npm pack --pack-destination "$RUNNER_TEMP"
+          grep -rqF 'extensionPrefix: "xthead"' dist
+      - name: Publish
+        env:
+          REGISTRY: ${{ github.server_url }}/api/packages/lab-packages/npm/
+          TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          tgz="$RUNNER_TEMP/rea-agents-${VERSION}.tgz"
+          npmrc="$RUNNER_TEMP/npmrc"
+          umask 077
+          printf '//%s:_authToken=%s\n' "${REGISTRY#https://}" "$TOKEN" > "$npmrc"
+          npm publish "$tgz" --ignore-scripts --registry "$REGISTRY" --userconfig "$npmrc" --tag lab
+          rm -f "$npmrc"
+          echo "rea-agents ${VERSION} sha256 $(sha256sum "$tgz" | cut -d' ' -f1)"
